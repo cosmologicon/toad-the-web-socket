@@ -54,6 +54,7 @@ Limitations of this library include but are not limited to:
 * No sophisticated error handling.
 * You can't start both a server and a client in the same program.
 * The server code only lets you start a single server.
+* No way to stop a server once it's started.
 * The client code can only be used to connect to a single server.
 
 ## Server API
