@@ -63,11 +63,18 @@ Limitations of this library include but are not limited to:
 
 ### Server callbacks
 
+By default, `client` is a `toad.Client` object in server callbacks, although this can be overridden
+(see `toad.Client` below).
+
 	@toad.onopen
 	def onopen(client):
 
 	@toad.onmessage
 	def onmessage(client, message):
+
+`message` is either be `str` or `bytes`, depending on which websocket message type was used.
+Normally there's no point returning anything from this callback. If you return `False` then the
+connection will be closed, as if you had called `client.close()`.
 
 	@toad.onerror
 	def onerror(client, exception):

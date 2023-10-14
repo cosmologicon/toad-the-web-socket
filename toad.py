@@ -1,8 +1,16 @@
 # Toad the web socket: A frivolous websocket library. By Christopher Night, CC0.
 # https://github.com/cosmologicon/toad-the-web-socket
 
-import asyncio
+import asyncio, base64, hashlib
 from itertools import count
+
+### EXCEPTION DEFINITIONS ###
+
+class BadClientHandshakeError:
+	"""A client connected but failed to send a well-formed WebSocket handshake."""
+	def __init__(self, request, client):
+		self.request = request
+		self.client = client
 
 ### CALLBACK SETUP ###
 
@@ -35,6 +43,42 @@ onerror = _callback_decorator_for("error")
 onclose = _callback_decorator_for("close")
 
 
+### HTTP HANDSHAKE HANDLING ###
+
+# https://developer.mozilla.org/en-US/docs/Web/HTTP/Messages#http_requests
+async def _read_http_request(stream_reader):
+	request_text = await stream_reader.readuntil(b"\r\n\r\n")
+	start_line, *lines = request_text.decode("utf-8").split("\r\n")
+	split_lines = [line.partition(":") for line in lines if line]
+	return { key: value.strip() for key, _, value in split_lines }
+
+# Produce the Sec-WebSocket-Accept string for the Server handshake response.
+# https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#server_handshake_response
+def _get_accept(key):
+	SALT = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	digest = hashlib.sha1(key.encode("utf-8") + SALT).digest()
+	return base64.b64encode(digest).decode("utf-8")
+
+def _get_handshake_response_headers(request):
+	if request is None or "Sec-WebSocket-Version" not in request:
+		return None
+	accept = _get_accept(request["Sec-WebSocket-Key"])
+	return [
+		("Upgrade", "websocket"),
+		("Connection", "Upgrade"),
+		("Sec-WebSocket-Accept", accept),
+	]
+
+async def _send_http(stream_writer, status_code, status_text, headers = ()):
+	lines = [f"HTTP/1.1 {status_code} {status_text}"]
+	for key, value in headers:
+		lines.append(f"{key}: {value}")
+	lines.append("")
+	message = "".join(line + "\r\n" for line in lines)
+	stream_writer.write(message.encode("utf-8"))
+	await stream_writer.drain()
+
+
 ### WEBSOCKET DATA FRAMES ###
 
 # https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#format
@@ -65,9 +109,17 @@ class ServerHandler:
 		self.client = Client(self)
 		self.callback_obj = self.client
 		self.is_open = True
+		self.handshake_complete = False
 
 	async def handshake(self):
-		raise NotImplementedError
+		request = await _read_http_request(self.reader)
+		headers = _get_handshake_response_headers(request)
+		if headers is None:
+			self.onerror(BadClientHandshakeError(request, self.client))
+			await _send_http(self.writer, 400, "Bad Request")
+			await self.close()
+			return
+		await _send_http(self.writer, 101, "Switching Protocols", headers)
 		ret = _on("open", self.client)
 		# Allow code to replace the client object by returning from onopen.
 		self.callback_obj = ret if ret is not None else self.client
@@ -89,6 +141,9 @@ class ServerHandler:
 				break
 			frames = []
 
+	def onerror(self, exception):
+		return _on("error", self.callback_obj, exception)
+
 	def onmessage(self, message):
 		return _on("message", self.callback_obj, message)
 
@@ -107,11 +162,12 @@ class ServerHandler:
 
 _clients_by_id = {}
 
+_id_generator = count()
+
 class Client:
-	_id_generator = count()
 	def __init__(self, handler):
 		self.handler = handler
-		self.id = next(self._id_generator)
+		self.id = next(_id_generator)
 		_clients_by_id[self.id] = self
 
 	def is_open(self):
