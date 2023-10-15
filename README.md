@@ -4,14 +4,14 @@ A frivolous Python websocket library
 **This library is under development and is not ready to be used!** Even when it's ready, you
 probably want a better library like [`websockets`](https://pypi.org/project/websockets/).
 
-## Quick usage: server code
+## Quick usage: server code (asynchronous version)
 
 	import toad
 
 	@toad.onopen
 	def onopen(client):
 		client.send("What is your favorite color?")
-	
+
 	@toad.onmessage
 	def onmessage(client, message):
 		if message.contains("yellow"):
@@ -21,7 +21,22 @@ probably want a better library like [`websockets`](https://pypi.org/project/webs
 
 	toad.start_server(host="http://localhost", port=8001)
 
-## Quick usage: client code
+## Quick usage: server code (synchronous version)
+
+	import toad
+
+	toad.start_server(host="http://localhost", port=8001, block=False)
+
+	while True:
+		for client in toad.opens():
+			client.send("What is your favorite color?")
+		for client, message in toad.messages():
+			if message.contains("yellow"):
+				client.send("Fine. Off you go.")
+			elif message.contains("blue"):
+				client.close()
+
+## Quick usage: client code (asynchronous version)
 
 	import toad
 
@@ -34,8 +49,21 @@ probably want a better library like [`websockets`](https://pypi.org/project/webs
 	@toad.onclose
 	def onclose():
 		print("Aaaaaah!")
-	
+
 	toad.open("http://localhost:8001")
+
+## Quick usage: client code (synchronous version)
+
+	import toad
+
+	toad.open("http://localhost:8001", block=False)
+
+	while toad.isopen():
+		for message in toad.messages():
+			if message == "What is your favorite color?":
+				toad.send("blue")
+				toad.send("no, yellow!")
+	print("Aaaaaah!")
 
 ## To install
 
@@ -59,7 +87,11 @@ Limitations of this library include but are not limited to:
 
 ## Server API
 
-	toad.start_server(host: str, port: int)
+	toad.start_server(host: str, port: int, block=True)
+
+If `block` is `True`, then the call will block until `toad.stop_server` is called.
+
+	toad.stop_server()
 
 ### Server callbacks
 
@@ -121,7 +153,18 @@ such as `onmessage` for this client.
 
 ## Client API
 
-	toad.open(url: str)
+There's no server object: the client code just calls methods of `toad` directly.
+
+	toad.open(url: str, block=True)
+
+If `block` is `True`, then the call will block until the connection is closed, by either the client
+or the server.
+
+	toad.isopen()
+
+	toad.send(message)
+
+	toad.close()
 
 ### Client callbacks
 
@@ -136,12 +179,4 @@ such as `onmessage` for this client.
 	
 	@toad.onclose
 	def onclose():
-
-### Client functions
-
-There's no server object: the client code just calls methods of `toad` directly.
-
-	toad.send(message)
-	
-	toad.close()
 
