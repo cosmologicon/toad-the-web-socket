@@ -4,6 +4,9 @@
 import asyncio, base64, hashlib
 from itertools import count
 
+MAX_EVENT_QUEUE_SIZE = 100
+MAX_PAYLOAD_SIZE = 100 << 20  # 100MB, maximum allowed payload size
+
 ### EXCEPTION DEFINITIONS ###
 
 class BadClientHandshakeError:
@@ -11,6 +14,11 @@ class BadClientHandshakeError:
 	def __init__(self, request, client):
 		self.request = request
 		self.client = client
+
+class PayloadTooLargeError:
+	"""A client sent a single message with an indicated payload greater than MAX_PAYLOAD_SIZE."""
+	def __init__(self, payload_len):
+		self.payload_len = payload_len
 
 ### CALLBACK SETUP ###
 
@@ -49,6 +57,7 @@ onclose = _callback_decorator_for("close")
 async def _read_http_request(stream_reader):
 	request_text = await stream_reader.readuntil(b"\r\n\r\n")
 	start_line, *lines = request_text.decode("utf-8").split("\r\n")
+	# TODO: check start_line
 	split_lines = [line.partition(":") for line in lines if line]
 	return { key: value.strip() for key, _, value in split_lines }
 
@@ -83,10 +92,45 @@ async def _send_http(stream_writer, status_code, status_text, headers = ()):
 
 # https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers#format
 
+async def _read_int(stream_reader, nbytes):
+	return int.from_bytes(await stream_reader.read(nbytes), "big", signed=False)
+
+def _apply_mask(data, mask):
+	nreps, extra = divmod(len(data), len(mask))
+	mask = mask * nreps + mask[:extra]
+	data_int = int.from_bytes(data, "little")
+	mask_int = int.from_bytes(mask, "little")
+	result_int = data_int ^ mask_int
+	return result_int.to_bytes(len(data), "little")	
+
 class Frame:
 	"""A single data frame."""
 	async def build(self, stream_reader):
-		raise NotImplementedError
+		b0, b1 = await stream_reader.read(2)
+		assert b0 & 0b01110000 == 0  # RSV = 0
+		self.FIN = b0 >> 7
+		self.opcode = b0 & 0b00001111
+		self.MASK = b1 >> 7
+		self.payload_len = b1 & 0b01111111
+		if self.payload_len == 126:
+			self.payload_len = await _read_int(stream_reader, 2)
+		elif self.payload_len == 127:
+			self.payload_len = await _read_int(stream_reader, 8)
+			if self.payload_len > MAX_PAYLOAD_LENGTH:
+				raise PayloadTooLargeError(self.payload_len)
+		if self.opcode not in [0, 1, 2, 8]:
+			raise NotImplementedError
+		self.is_continuation = self.opcode == 0
+		self.is_text = self.opcode == 1
+		self.is_binary = self.opcode == 2
+		self.is_close = self.opcode == 8
+		self.is_final = self.FIN == 1
+		mask = await stream_reader.read(4)
+		self.payload_bytes = await stream_reader.read(self.payload_len)
+		if self.MASK:
+			self.payload_bytes = _apply_mask(self.payload_bytes, mask)
+		else:
+			assert not any(mask)
 
 	@staticmethod
 	async def read(stream_reader):
@@ -96,7 +140,14 @@ class Frame:
 
 def _join_payload(frames):
 	"""Extract the payload from a complete sequence of frames."""
-	raise NotImplementedError
+	if len(frames) == 1:
+		payload_bytes = frames[0].payload_bytes
+	else:
+		assert all(frame.is_continuation for frame in frames[1:])
+		payload_bytes = b"".join(frame.payload_bytes for frame in frames)
+	assert frames[-1].is_final
+	assert frames[0].is_text or frames[0].is_binary
+	return payload_bytes if frames[0].is_binary else payload_bytes.decode(encoding="utf-8")
 
 
 ### SERVER API ###
@@ -192,8 +243,10 @@ async def _run_server(host, port):
 	async with server:
 		await server.serve_forever()
 
-def start_server(host, port, debug = False):
+def start_server(host, port, debug=False, block=False):
 	"""Start serving on the given host and port."""
+	if block:
+		raise NotImplementedError
 	asyncio.run(_run_server(host, port), debug=debug)
 
 
