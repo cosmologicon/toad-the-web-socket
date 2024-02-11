@@ -5,7 +5,8 @@ import asyncio, base64, hashlib
 from itertools import count
 
 MAX_EVENT_QUEUE_SIZE = 100
-MAX_PAYLOAD_SIZE = 100 << 20  # 100MB, maximum allowed payload size
+PAYLOAD_SPLIT_SIZE = 1 << 20  # 1MB, payloads longer than this will be fragmented before sending
+MAX_PAYLOAD_SIZE = 100 << 20  # 100MB, maximum allowed received payload size in single frame
 
 ### EXCEPTION DEFINITIONS ###
 
@@ -95,6 +96,12 @@ async def _send_http(stream_writer, status_code, status_text, headers = ()):
 async def _read_int(stream_reader, nbytes):
 	return int.from_bytes(await stream_reader.read(nbytes), "big", signed=False)
 
+def _random_mask():
+	while True:
+		mask = os.urandom(4)
+		if not any(mask):
+			return mask
+
 def _apply_mask(data, mask):
 	nreps, extra = divmod(len(data), len(mask))
 	mask = mask * nreps + mask[:extra]
@@ -105,7 +112,19 @@ def _apply_mask(data, mask):
 
 class Frame:
 	"""A single data frame."""
-	async def build(self, stream_reader):
+	def __init__(self, payload = "", opcode = None, MASK = False, FIN = 1):
+		self.MASK = 1 if MASK else 0
+		self.FIN = FIN
+		self.payload = payload
+		if len(self.payload) > MAX_PAYLOAD_SIZE:
+			raise PayloadTooLargeError(len(self.payload))
+		if opcode is None:
+			self.opcode = 1 if isinstance(payload, str) else 2
+		else:
+			self.opcode = opcode
+		self.payload_bytes = payload.encode("utf-8") if isinstance(payload, str) else payload
+
+	async def extract(self, stream_reader):
 		b0, b1 = await stream_reader.read(2)
 		assert b0 & 0b01110000 == 0  # RSV = 0
 		self.FIN = b0 >> 7
@@ -125,18 +144,42 @@ class Frame:
 		self.is_binary = self.opcode == 2
 		self.is_close = self.opcode == 8
 		self.is_final = self.FIN == 1
-		mask = await stream_reader.read(4)
+		if self.MASK:
+			mask = await stream_reader.read(4)
 		self.payload_bytes = await stream_reader.read(self.payload_len)
 		if self.MASK:
 			self.payload_bytes = _apply_mask(self.payload_bytes, mask)
+
+	def get_message(self):
+		RSV = 0
+		payload_len = len(self.payload_bytes)
+		if payload_len >= 1 << 16:
+			extended_payload_len = payload_len.to_bytes(8, "big")
+			payload_len = 127
+		elif payload_len >= 126:
+			extended_payload_len = payload_len.to_bytes(2, "big")
+			payload_len = 127
 		else:
-			assert not any(mask)
+			extended_payload_len = b""
+		byte0 = self.FIN << 7 | RSV << 4 | self.opcode
+		byte1 = self.MASK << 7 | payload_len
+		if self.MASK:
+			mask = _random_mask()
+			encoded = _apply_mask(self.payload_bytes, mask)
+			return b"".join([bytes([byte0, byte1]), extended_payload_len, mask, encoded])
+		else:
+			return b"".join([bytes([byte0, byte1]), extended_payload_len, self.payload_bytes])
+
+	async def write(self, stream_writer):
+		stream_writer.write(self.get_message())
+		await stream_writer.drain()
 
 	@staticmethod
 	async def read(stream_reader):
 		frame = Frame()
-		await frame.build(stream_reader)
+		await frame.extract(stream_reader)
 		return frame
+
 
 def _join_payload(frames):
 	"""Extract the payload from a complete sequence of frames."""
@@ -201,7 +244,8 @@ class ServerHandler:
 	async def send(self, message):
 		if not self.is_open:
 			return
-		raise NotImplementedError
+		frame = Frame(message)
+		await frame.write(self.writer)
 
 	async def close(self):
 		if not self.is_open:
@@ -225,10 +269,10 @@ class Client:
 		return self.handler.is_open
 
 	def send(self, message):
-		asyncio.run(self.handler.send(message))
+		asyncio.ensure_future(self.handler.send(message))
 
 	def close(self):
-		asyncio.run(self.handler.close())
+		asyncio.ensure_future(self.handler.close())
 
 
 async def _server_handle(stream_reader, stream_writer):

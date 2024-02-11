@@ -82,7 +82,7 @@ Limitations of this library include but are not limited to:
 * No sophisticated error handling.
 * You can't start both a server and a client in the same program.
 * The server code only lets you start a single server.
-* No way to stop a server once it's started.
+* No way to stop a server once it's started (other than killing the program).
 * The client code can only be used to connect to a single server.
 
 ## Server API
@@ -104,7 +104,7 @@ By default, `client` is a `toad.Client` object in server callbacks, although thi
 	@toad.onmessage
 	def onmessage(client, message):
 
-`message` is either be `str` or `bytes`, depending on which websocket message type was used.
+`message` is either `str` or `bytes`, depending on which websocket message type was used.
 Normally there's no point returning anything from this callback. If you return `False` then the
 connection will be closed, as if you had called `client.close()`.
 
