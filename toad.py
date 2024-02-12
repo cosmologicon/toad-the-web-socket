@@ -158,7 +158,7 @@ class Frame:
 			payload_len = 127
 		elif payload_len >= 126:
 			extended_payload_len = payload_len.to_bytes(2, "big")
-			payload_len = 127
+			payload_len = 126
 		else:
 			extended_payload_len = b""
 		byte0 = self.FIN << 7 | RSV << 4 | self.opcode
@@ -251,8 +251,8 @@ class ServerHandler:
 		if not self.is_open:
 			return
 		self.is_open = False
-		raise NotImplementedError
 		_on("close", self.callback_obj)
+		del _clients_by_id[self.client.id]
 
 
 _clients_by_id = {}

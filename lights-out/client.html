@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+<title>Lights Out</title>
+<style>
+canvas {
+	background: #040404;
+}
+</style>
+<script src="//ufx.space/UFX.js"></script>
+<canvas id=canvas></canvas>
+<script>
+"use strict"
+let tau = 2 * Math.PI
+let canvas = document.getElementById("canvas")
+let context = canvas.getContext("2d")
+UFX.maximize.fill(canvas, "total")
+UFX.draw.setcontext(context)
+
+function adjs(w, h, x0, y0) {
+	return [[0, 0], [-1, 0], [0, -1], [1, 0], [0, 1]]
+		.map(([dx, dy]) => [x0 + dx, y0 + dy])
+		.filter(([x, y]) => 0 <= x && x < w && 0 <= y && y < h)
+		.map(([x, y]) => x + w * y)
+}
+
+function Gamestate(w, h, pattern) {
+	this.w = w
+	this.h = h
+	this.pattern = pattern == null ? new Array(w * h).fill(0) : pattern
+}
+Gamestate.prototype = {
+	is_win: function () {
+		return !this.pattern.some(x => x)
+	},
+	toggle: function (pos) {
+		let [x, y] = pos
+		for (let j of adjs(this.w, this.h, x, y)) {
+			this.pattern[j] = 1 - this.pattern[j]
+		}
+	},
+	lights: function () {
+		return this.pattern.map((on, j) => {
+			let x = j % this.w, y = Math.floor(j / this.w)
+			let sx = (x - this.w / 2) * 100 + 50, sy = (y - this.h / 2) * 100 + 50
+			return [j, x, y, on, sx, sy]
+		})
+	},
+	WscaleV: function () {
+		return Math.max(100 * (this.w + 2) / canvas.width, 100 * (this.h + 2) / canvas.height)
+	},
+	WconvertV: function (posV) {
+		let [xV, yV] = posV, WscaleV = this.WscaleV()
+		return [(xV - canvas.width / 2) * WscaleV, (yV - canvas.height / 2) * WscaleV]
+	},
+	GconvertW: function (posW) {
+		let [xW, yW] = posW
+		return [xW / 100 + this.w / 2 - 0.5, yW / 100 + this.h / 2 - 0.5]
+	},
+	pointedW: function (posW) {
+		let [xG, yG] = this.GconvertW(posW)
+		let xI = Math.round(xG), yI = Math.round(yG)
+//		console.log(x, y, gx, gy, ix, iy)
+		if (0 <= xI && xI < this.w && 0 <= yI && yI < this.h && Math.hypot(xG - xI, yG - yI) < 0.4) {
+			return [xI, yI]
+		}
+		return null
+	},
+}
+
+function PingTimer() {
+	this.pending = {}
+	this.ts = []
+	this.avgping = 0
+}
+PingTimer.prototype = {
+	start: function (key) {
+		this.pending[key] = Date.now()
+	},
+	stop: function (key) {
+		let dt = Date.now() - this.pending[key]
+		this.ts.push(dt)
+		delete this.pending[key]
+		this.avgping = this.ts.reduce((a, b) => a + b) / this.ts.length
+	},
+}
+let pingtimer = new PingTimer()
+
+
+let state = null
+
+let handlers = {
+	newstate: function (args) {
+		if ("clientid" in args) clientid = args.clientid
+		state = new Gamestate(args.w, args.h, args.pattern)
+	},
+	toggle: function (args) {
+		if (args.who === clientid) pingtimer.stop([args.x, args.y])
+		state.toggle([args.x, args.y])
+	},
+	debug: function (args) {
+		num_clients = args.num_clients
+	},
+}
+
+let socket = new WebSocket("ws://localhost:1234")
+socket.addEventListener("open", (event) => {
+	console.log("open")
+})
+socket.addEventListener("error", (event) => {
+	console.log("error", event)
+})
+socket.addEventListener("message", (event) => {
+	console.log("message", event)
+	let [method, args] = JSON.parse(event.data)
+	console.log(method, args)
+	handlers[method](args)
+})
+let clientid = null
+let num_clients = null
+
+
+let cursorV = null, cursorW = null, pointed = null
+function think(dt) {
+	let pstate = UFX.pointer(canvas)
+	if ("pos" in pstate) {
+		cursorV = pstate.pos
+		if (state !== null) {
+			cursorW = state.WconvertV(cursorV)
+			pointed = state.pointedW(cursorW)
+		}
+	}
+	if (pointed != null && pstate.down) {
+//		state.toggle(pointed)
+		pingtimer.start(pointed)
+		socket.send(JSON.stringify(["toggle", { x: pointed[0], y: pointed[1] }]))
+	}
+}
+
+
+function draw() {
+	UFX.draw("fs #333 f0")
+	if (state !== null) {
+		let VscaleW = 1 / state.WscaleV()
+		UFX.draw("[ t", canvas.width / 2, canvas.height / 2, "z", VscaleW, VscaleW)
+		UFX.draw("[ t", 0, -100 * (state.h / 2) - 45,
+			"font 90px~'Boogaloo'",
+			"tab center middle",
+			"fs", UFX.draw.lingrad(0, 30, 0, -30, 0, "#660", 1, "#330"),
+			"ss black lw 7 shadow black 3 3 3 sft0 Lights~Out ]")
+		state.lights().forEach(([j, x, y, on, sx, sy]) => {
+			let color0 = on ? "#cc7" : "#000"
+			let color1 = on ? "#770" : "#111"
+			let grad = UFX.draw.radgrad(0, 0, 0, 0, 0, 40, 0, color0, 1, color1)
+			UFX.draw("[ t", sx, sy,
+				"b o 0 0", 45, "fs", (pointed == ""+[x, y] ? "#aaa" : "#666"), "f",
+				"b o 0 0", 40, "fs", grad, "f",
+				"]")
+		})
+		UFX.draw("]")
+	}
+	UFX.draw("[ t", 0, canvas.height, "z", canvas.height / 1000, canvas.height / 1000,
+		"tab left bottom font bold~40px~'monospace' fs white ss black lw 2 t 10 -5")
+	;[
+		"Client~ID:~#" + clientid,
+		"Num~clients:~" + num_clients,
+		"Response~time:~" + Math.round(pingtimer.avgping) + "ms",
+		
+	].reverse().forEach(line => UFX.draw("sft0", line, "t 0 -50"))
+	UFX.draw("]")
+}
+
+UFX.resource.loadwebfonts("Boogaloo", "Passion One")
+UFX.resource.onload = function () {
+	UFX.ticker.init(think, draw, {
+		ups: 120,
+		maxupf: 12,
+	})
+}
+</script>
