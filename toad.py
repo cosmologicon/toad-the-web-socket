@@ -1,7 +1,7 @@
 # Toad the web socket: A frivolous websocket library. By Christopher Night, CC0.
 # https://github.com/cosmologicon/toad-the-web-socket
 
-import asyncio, base64, hashlib
+import asyncio, base64, hashlib, json, time
 from itertools import count
 
 MAX_EVENT_QUEUE_SIZE = 100
@@ -28,6 +28,7 @@ _callbacks = {
 	"message": [],
 	"error": [],
 	"close": [],
+	"tick": [],
 }
 def _on(eventname, *args, **kw):
 	"""Dispatch the corresponding set of callbacks with the given arguments."""
@@ -50,6 +51,7 @@ onopen = _callback_decorator_for("open")
 onmessage = _callback_decorator_for("message")
 onerror = _callback_decorator_for("error")
 onclose = _callback_decorator_for("close")
+ontick = _callback_decorator_for("tick")
 
 
 ### HTTP HANDSHAKE HANDLING ###
@@ -271,9 +273,21 @@ class Client:
 	def send(self, message):
 		asyncio.ensure_future(self.handler.send(message))
 
+	def send_json(self, obj):
+		self.send(json.dumps(obj))
+
 	def close(self):
 		asyncio.ensure_future(self.handler.close())
 
+def open_clients():
+	return [client for client in _clients_by_id.values() if client.is_open()]
+
+def send_all(message):
+	for client in open_clients():
+		client.send(message)
+
+def send_all_json(obj):
+	send_all(json.dumps(obj))
 
 async def _server_handle(stream_reader, stream_writer):
 	"""Called when a new connection is made. Creates a handler and keeps the connection open."""
@@ -287,11 +301,25 @@ async def _run_server(host, port):
 	async with server:
 		await server.serve_forever()
 
-def start_server(host, port, debug=False, block=False):
+async def _run_tick(dtick):
+	if dtick is None:
+		return
+	t0 = time.time()
+	while True:
+		_on("tick")
+		t0 += dtick
+		dt = t0 - time.time()
+		if dt > 0:
+			await asyncio.sleep(dt)
+
+async def _run(host, port, tick):
+	await asyncio.gather(_run_server(host, port), _run_tick(tick))
+
+def start_server(host, port, tick=None, debug=False, block=False):
 	"""Start serving on the given host and port."""
 	if block:
 		raise NotImplementedError
-	asyncio.run(_run_server(host, port), debug=debug)
+	asyncio.run(_run(host, port, tick), debug=debug)
 
 
 ### CLIENT API ###

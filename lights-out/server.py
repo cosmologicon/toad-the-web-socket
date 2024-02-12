@@ -1,43 +1,37 @@
 import json
 import toad, game
 
-state = game.Gamestate.randomstate(5, 5)
+GRIDSIZE = 3, 3
 
-def open_clients():
-	for client in toad._clients_by_id.values():
-		if client.is_open():
-			yield client
-
-def num_clients():
-	return len(list(open_clients()))
-
-def send_json(client, method, **kw):
-	client.send(json.dumps([method, kw]))
-
-def send_all_json(method, **kw):
-	message = json.dumps([method, kw])
-	for client in open_clients():
-		client.send(message)
+state = game.Gamestate.randomstate(*GRIDSIZE)
 
 def send_debug():
-	send_all_json("debug", num_clients = num_clients())
+	toad.send_all_json(["debug", dict(num_clients = len(toad.open_clients()))])
 
 @toad.onopen
 def onopen(client):
-	send_json(client, "newstate", clientid = client.id, **state.toobj())
+	client.send_json(["newstate", dict(clientid = client.id, **state.toobj())])
 	send_debug()
 
 def handle_wantstate(client):
-	send_json(client, "newstate", **state.tobj())
-def handle_toggle(client, x, y):
+	client.send_json(["newstate", dict(**state.toobj())])
+
+def handle_toggle(client, x, y, id):
+	if id != state.id or state.is_win():
+		client.send_json(["cancelmove", dict(x = x, y = y)])
+		return
 	state.toggle(x, y)
-	send_all_json("toggle", x = x, y = y, who = client.id)
+	toad.send_all_json(["toggle", dict(x = x, y = y, id = state.id, who = client.id)])
+
+def newgame():
+	global state
+	state = game.Gamestate.randomstate(*GRIDSIZE)
+	toad.send_all_json(["newstate", dict(**state.toobj())])
 
 @toad.onmessage
 def onmessage(client, message):
 	method, kw = json.loads(message)
 	globals()["handle_" + method](client, **kw)
-	# TODO: catch and log error
 
 @toad.onerror
 def onnerror(client, error):
@@ -47,5 +41,17 @@ def onnerror(client, error):
 def onclose(client):
 	send_debug()
 
-toad.start_server("", 1234)
+wintimer = 0
+@toad.ontick
+def ontick():
+	global wintimer
+	if state.is_win():
+		wintimer += 0.5
+		if wintimer >= 2:
+			newgame()
+			wintimer = 0
+	else:
+		wintimer = 0
+
+toad.start_server("", 1234, tick=0.5)
 

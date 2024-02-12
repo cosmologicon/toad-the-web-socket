@@ -23,14 +23,19 @@ function adjs(w, h, x0, y0) {
 		.map(([x, y]) => x + w * y)
 }
 
-function Gamestate(w, h, pattern) {
+function Gamestate(w, h, id, pattern) {
 	this.w = w
 	this.h = h
 	this.pattern = pattern == null ? new Array(w * h).fill(0) : pattern
+	this.id = id
+	this.tfade = 0
 }
 Gamestate.prototype = {
 	is_win: function () {
 		return !this.pattern.some(x => x)
+	},
+	think: function (dt) {
+		this.tfade = this.is_win() ? this.tfade + dt : 0
 	},
 	toggle: function (pos) {
 		let [x, y] = pos
@@ -74,11 +79,13 @@ function PingTimer() {
 }
 PingTimer.prototype = {
 	start: function (key) {
+		console.log("starting", key)
 		this.pending[key] = Date.now()
 	},
 	stop: function (key) {
 		let dt = Date.now() - this.pending[key]
 		this.ts.push(dt)
+		console.log("ending", key)
 		delete this.pending[key]
 		this.avgping = this.ts.reduce((a, b) => a + b) / this.ts.length
 	},
@@ -90,38 +97,57 @@ let state = null
 
 let handlers = {
 	newstate: function (args) {
-		if ("clientid" in args) clientid = args.clientid
-		state = new Gamestate(args.w, args.h, args.pattern)
+		if ("clientid" in args) socket.clientid = args.clientid
+		state = new Gamestate(args.w, args.h, args.id, args.pattern)
+	},
+	cancelmove: function (args) {
+		console.log("MOVE CANCELED " + args)
 	},
 	toggle: function (args) {
-		if (args.who === clientid) pingtimer.stop([args.x, args.y])
+		if (args.who === socket.clientid) pingtimer.stop([args.id, [args.x, args.y]])
 		state.toggle([args.x, args.y])
 	},
 	debug: function (args) {
-		num_clients = args.num_clients
+		socket.num_clients = args.num_clients
 	},
 }
 
-let socket = new WebSocket("ws://localhost:1234")
-socket.addEventListener("open", (event) => {
-	console.log("open")
-})
-socket.addEventListener("error", (event) => {
-	console.log("error", event)
-})
-socket.addEventListener("message", (event) => {
-	console.log("message", event)
-	let [method, args] = JSON.parse(event.data)
-	console.log(method, args)
-	handlers[method](args)
-})
-let clientid = null
-let num_clients = null
-
+let socket
+function connect() {
+	try {
+		socket = new WebSocket("ws://localhost:1234")
+	} catch (error) {
+		console.error(error)
+		return null
+	}
+	socket.addEventListener("open", (event) => {
+		console.log("open")
+	})
+	socket.addEventListener("error", (event) => {
+		console.error("error", event)
+	})
+	socket.addEventListener("message", (event) => {
+		console.log("message", event)
+		let [method, args] = JSON.parse(event.data)
+		console.log(method, args)
+		handlers[method](args)
+	})
+	socket.addEventListener("close", (event) => {
+		console.log("close", event, socket)
+		socket = null
+		console.log(socket)
+	})
+	socket.clientid = null
+	socket.num_clients = null
+}
+connect()
 
 let cursorV = null, cursorW = null, pointed = null
 function think(dt) {
+	state.think(dt)
 	let pstate = UFX.pointer(canvas)
+	if (socket === null && pstate.down) connect()
+	if (socket === null) return
 	if ("pos" in pstate) {
 		cursorV = pstate.pos
 		if (state !== null) {
@@ -131,14 +157,23 @@ function think(dt) {
 	}
 	if (pointed != null && pstate.down) {
 //		state.toggle(pointed)
-		pingtimer.start(pointed)
-		socket.send(JSON.stringify(["toggle", { x: pointed[0], y: pointed[1] }]))
+		pingtimer.start([state.id, pointed])
+		socket.send(JSON.stringify(["toggle", { id: state.id, x: pointed[0], y: pointed[1] }]))
 	}
 }
 
 
 function draw() {
 	UFX.draw("fs #333 f0")
+	if (socket === null) {
+		let z = Math.hypot(canvas.width, canvas.height) / 1000
+		UFX.draw("[ t", canvas.width / 2, canvas.height / 2, "z", z, z,
+			"font 50px~'Boogaloo' tab center middle",
+			"fs white ss black lw 7 shadow black 3 3 3",
+			"sft Server~disconected 0 -25",
+			"sft click~to~reconnect 0 25 ]")
+		return
+	}
 	if (state !== null) {
 		let VscaleW = 1 / state.WscaleV()
 		UFX.draw("[ t", canvas.width / 2, canvas.height / 2, "z", VscaleW, VscaleW)
@@ -147,6 +182,7 @@ function draw() {
 			"tab center middle",
 			"fs", UFX.draw.lingrad(0, 30, 0, -30, 0, "#660", 1, "#330"),
 			"ss black lw 7 shadow black 3 3 3 sft0 Lights~Out ]")
+		if (state.tfade) UFX.draw("alpha", Math.max(0, 1 - state.tfade))
 		state.lights().forEach(([j, x, y, on, sx, sy]) => {
 			let color0 = on ? "#cc7" : "#000"
 			let color1 = on ? "#770" : "#111"
@@ -159,13 +195,13 @@ function draw() {
 		UFX.draw("]")
 	}
 	UFX.draw("[ t", 0, canvas.height, "z", canvas.height / 1000, canvas.height / 1000,
-		"tab left bottom font bold~40px~'monospace' fs white ss black lw 2 t 10 -5")
+		"tab left bottom font bold~26px~'monospace' fs white ss black lw 2 t 10 -5")
 	;[
-		"Client~ID:~#" + clientid,
-		"Num~clients:~" + num_clients,
+		"Game~#" + state.id,
+		"Player~#" + socket.clientid,
+		"Num~players:~" + socket.num_clients,
 		"Response~time:~" + Math.round(pingtimer.avgping) + "ms",
-		
-	].reverse().forEach(line => UFX.draw("sft0", line, "t 0 -50"))
+	].reverse().forEach(line => UFX.draw("sft0", line, "t 0 -30"))
 	UFX.draw("]")
 }
 
