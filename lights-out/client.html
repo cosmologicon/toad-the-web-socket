@@ -168,17 +168,17 @@ function draw() {
 	if (socket === null) {
 		let z = Math.hypot(canvas.width, canvas.height) / 1000
 		UFX.draw("[ t", canvas.width / 2, canvas.height / 2, "z", z, z,
-			"font 50px~'Boogaloo' tab center middle",
+			"font 40px~'Righteous' tab center middle",
 			"fs white ss black lw 7 shadow black 3 3 3",
-			"sft Server~disconected 0 -25",
-			"sft click~to~reconnect 0 25 ]")
+			"sft Server~disconected 0 -20",
+			"sft click~to~reconnect 0 20 ]")
 		return
 	}
 	if (state !== null) {
 		let VscaleW = 1 / state.WscaleV()
 		UFX.draw("[ t", canvas.width / 2, canvas.height / 2, "z", VscaleW, VscaleW)
 		UFX.draw("[ t", 0, -100 * (state.h / 2) - 45,
-			"font 90px~'Boogaloo'",
+			"font 60px~'Righteous'",
 			"tab center middle",
 			"fs", UFX.draw.lingrad(0, 30, 0, -30, 0, "#660", 1, "#330"),
 			"ss black lw 7 shadow black 3 3 3 sft0 Lights~Out ]")
@@ -205,7 +205,7 @@ function draw() {
 	UFX.draw("]")
 }
 
-UFX.resource.loadwebfonts("Boogaloo", "Passion One")
+UFX.resource.loadwebfonts("Righteous")
 UFX.resource.onload = function () {
 	UFX.ticker.init(think, draw, {
 		ups: 120,

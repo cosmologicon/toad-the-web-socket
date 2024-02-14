@@ -42,9 +42,10 @@ def onclose(client):
 	send_debug()
 
 wintimer = 0
+pingtimer = 0
 @toad.ontick
 def ontick():
-	global wintimer
+	global wintimer, pingtimer
 	if state.is_win():
 		wintimer += 0.5
 		if wintimer >= 2:
@@ -52,6 +53,13 @@ def ontick():
 			wintimer = 0
 	else:
 		wintimer = 0
+	pingtimer += 0.5
+	if pingtimer > 5:
+		for client in toad.open_clients():
+			ping = client.last_ping()
+			print(f"PING CLIENT#{client.id}: {ping if ping is None else round(1000 * ping, 1)}ms")
+			client.ping()
+		pingtimer = 0
 
-toad.start_server("", 1234, tick=0.5)
+toad.start_server("", 1234, tick_seconds=0.5)
 

@@ -1,7 +1,7 @@
 # Toad the web socket: A frivolous websocket library. By Christopher Night, CC0.
 # https://github.com/cosmologicon/toad-the-web-socket
 
-import asyncio, base64, hashlib, json, time
+import asyncio, base64, hashlib, json, time, uuid
 from itertools import count
 
 MAX_EVENT_QUEUE_SIZE = 100
@@ -139,12 +139,14 @@ class Frame:
 			self.payload_len = await _read_int(stream_reader, 8)
 			if self.payload_len > MAX_PAYLOAD_LENGTH:
 				raise PayloadTooLargeError(self.payload_len)
-		if self.opcode not in [0, 1, 2, 8]:
+		if self.opcode not in [0, 1, 2, 8, 9, 10]:
 			raise NotImplementedError
 		self.is_continuation = self.opcode == 0
 		self.is_text = self.opcode == 1
 		self.is_binary = self.opcode == 2
 		self.is_close = self.opcode == 8
+		self.is_ping = self.opcode == 9
+		self.is_pong = self.opcode == 10
 		self.is_final = self.FIN == 1
 		if self.MASK:
 			mask = await stream_reader.read(4)
@@ -195,6 +197,26 @@ def _join_payload(frames):
 	return payload_bytes if frames[0].is_binary else payload_bytes.decode(encoding="utf-8")
 
 
+### PING RECORD ###
+
+class PingRecord():
+	def __init__(self):
+		self.pending = {}
+		self.complete = []
+
+	def send(self, id):
+		self.pending[id] = time.time()
+	
+	def receive(self, id):
+		if id in self.pending:
+			dt = time.time() - self.pending[id]
+			self.complete.append(dt)
+			del self.pending[id]
+
+	def last_ping(self):
+		return self.complete[-1] if self.complete else None
+
+
 ### SERVER API ###
 
 class ServerHandler:
@@ -231,10 +253,15 @@ class ServerHandler:
 				continue
 			if not self.is_open:
 				break
-			message = _join_payload(frames)
-			ret = self.onmessage(message)
-			if ret is False:
-				break
+			if frame.is_ping:
+				self.onping(frame.payload_bytes)
+			elif frame.is_pong:
+				self.onpong(frame.payload_bytes)
+			else:
+				message = _join_payload(frames)
+				ret = self.onmessage(message)
+				if ret is False:
+					break
 			frames = []
 
 	def onerror(self, exception):
@@ -243,10 +270,34 @@ class ServerHandler:
 	def onmessage(self, message):
 		return _on("message", self.callback_obj, message)
 
+	def onping(self, payload):
+		asyncio.ensure_future(self.send_pong(payload))
+
+	def onpong(self, payload):
+		self.client.ping_record.receive(payload)
+
 	async def send(self, message):
 		if not self.is_open:
 			return
+		# TODO: large message fragmentation
 		frame = Frame(message)
+		await frame.write(self.writer)
+
+	async def send_ping(self, payload = None):
+		if not self.is_open:
+			return
+		if payload is None:
+			payload = str(uuid.uuid4()).encode("utf-8")
+		if len(payload) > 125:
+			raise ValueError(f"Ping payload size {len(payload)} bytes > max of 125.")
+		frame = Frame(payload, opcode = 9)
+		self.client.ping_record.send(payload)
+		await frame.write(self.writer)
+
+	async def send_pong(self, payload):
+		if not self.is_open:
+			return
+		frame = Frame(payload, opcode = 10)
 		await frame.write(self.writer)
 
 	async def close(self):
@@ -259,13 +310,14 @@ class ServerHandler:
 
 _clients_by_id = {}
 
-_id_generator = count()
+_client_id_generator = count()
 
 class Client:
 	def __init__(self, handler):
 		self.handler = handler
-		self.id = next(_id_generator)
+		self.id = next(_client_id_generator)
 		_clients_by_id[self.id] = self
+		self.ping_record = PingRecord()
 
 	def is_open(self):
 		return self.handler.is_open
@@ -276,8 +328,18 @@ class Client:
 	def send_json(self, obj):
 		self.send(json.dumps(obj))
 
+	def ping(self):
+		asyncio.ensure_future(self.handler.send_ping())
+
 	def close(self):
 		asyncio.ensure_future(self.handler.close())
+
+	def last_ping_seconds(self):
+		return self.ping_record.last_ping()
+
+	def last_ping_ms(self):
+		ping = self.last_ping_seconds()
+		return None if ping is None else 1000 * ping
 
 def open_clients():
 	return [client for client in _clients_by_id.values() if client.is_open()]
@@ -302,6 +364,7 @@ async def _run_server(host, port):
 		await server.serve_forever()
 
 async def _run_tick(dtick):
+	"""Invoke `ontick` once every `dtick` seconds."""
 	if dtick is None:
 		return
 	t0 = time.time()
@@ -312,14 +375,14 @@ async def _run_tick(dtick):
 		if dt > 0:
 			await asyncio.sleep(dt)
 
-async def _run(host, port, tick):
-	await asyncio.gather(_run_server(host, port), _run_tick(tick))
+async def _run(host, port, dtick):
+	await asyncio.gather(_run_server(host, port), _run_tick(dtick))
 
-def start_server(host, port, tick=None, debug=False, block=False):
+def start_server(host, port, tick_seconds=None, debug=False, block=False):
 	"""Start serving on the given host and port."""
 	if block:
 		raise NotImplementedError
-	asyncio.run(_run(host, port, tick), debug=debug)
+	asyncio.run(_run(host, port, tick_seconds), debug=debug)
 
 
 ### CLIENT API ###
