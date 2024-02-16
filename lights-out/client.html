@@ -108,14 +108,14 @@ let handlers = {
 		state.toggle([args.x, args.y])
 	},
 	debug: function (args) {
-		socket.num_clients = args.num_clients
+		socket.debug = args
 	},
 }
 
 let socket
 function connect() {
 	try {
-		socket = new WebSocket("ws://localhost:1234")
+		socket = new WebSocket("wss://universefactory.net:1701")
 	} catch (error) {
 		console.error(error)
 		return null
@@ -144,7 +144,7 @@ connect()
 
 let cursorV = null, cursorW = null, pointed = null
 function think(dt) {
-	state.think(dt)
+	if (state !== null) state.think(dt)
 	let pstate = UFX.pointer(canvas)
 	if (socket === null && pstate.down) connect()
 	if (socket === null) return
@@ -155,7 +155,7 @@ function think(dt) {
 			pointed = state.pointedW(cursorW)
 		}
 	}
-	if (pointed != null && pstate.down) {
+	if (state !== null && pointed !== null && pstate.down) {
 //		state.toggle(pointed)
 		pingtimer.start([state.id, pointed])
 		socket.send(JSON.stringify(["toggle", { id: state.id, x: pointed[0], y: pointed[1] }]))
@@ -196,11 +196,15 @@ function draw() {
 	}
 	UFX.draw("[ t", 0, canvas.height, "z", canvas.height / 1000, canvas.height / 1000,
 		"tab left bottom font bold~26px~'monospace' fs white ss black lw 2 t 10 -5")
+	let client_pings = socket.debug && socket.debug.client_pings
+		? socket.debug.client_pings.map(([id, ping]) => `#${id}=${ping}ms`).join("~~~")
+		: ""
 	;[
 		"Game~#" + state.id,
 		"Player~#" + socket.clientid,
-		"Num~players:~" + socket.num_clients,
-		"Response~time:~" + Math.round(pingtimer.avgping) + "ms",
+		"Num~players:~" + (socket.debug ? socket.debug.num_clients : ""),
+		"Server~ping:~" + Math.round(pingtimer.avgping) + "ms",
+		"Client~pings:~" + client_pings,
 	].reverse().forEach(line => UFX.draw("sft0", line, "t 0 -30"))
 	UFX.draw("]")
 }

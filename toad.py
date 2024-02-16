@@ -337,9 +337,10 @@ class Client:
 	def last_ping_seconds(self):
 		return self.ping_record.last_ping()
 
-	def last_ping_ms(self):
+	def last_ping_ms(self, round_to = 1):
 		ping = self.last_ping_seconds()
-		return None if ping is None else 1000 * ping
+		if ping is None: return None
+		return 1000 * ping if round_to is None else round(1000 * ping, round_to)
 
 def open_clients():
 	return [client for client in _clients_by_id.values() if client.is_open()]
@@ -358,8 +359,20 @@ async def _server_handle(stream_reader, stream_writer):
 	await handler.run()
 	await handler.close()
 
-async def _run_server(host, port):
-	server = await asyncio.start_server(_server_handle, host=host, port=port)
+def _get_ssl_context(ssl_context, ssl_files):
+	if ssl_context is None and ssl_files is None:
+		return None
+	if ssl_context is None:
+		import ssl
+		ssl_context = ssl.SSLContext()
+	if ssl_files is not None:
+		certfile, keyfile = ssl_files
+		ssl_context.load_cert_chain(certfile, keyfile)
+	return ssl_context
+
+async def _run_server(host, port, ssl, ssl_files):
+	ssl_context = _get_ssl_context(ssl, ssl_files)
+	server = await asyncio.start_server(_server_handle, host=host, port=port, ssl=ssl_context)
 	async with server:
 		await server.serve_forever()
 
@@ -375,14 +388,16 @@ async def _run_tick(dtick):
 		if dt > 0:
 			await asyncio.sleep(dt)
 
-async def _run(host, port, dtick):
-	await asyncio.gather(_run_server(host, port), _run_tick(dtick))
+async def _run(host, port, dtick, ssl, ssl_files):
+	await asyncio.gather(_run_server(host, port, ssl, ssl_files), _run_tick(dtick))
 
-def start_server(host, port, tick_seconds=None, debug=False, block=False):
+def start_server(host, port, tick_seconds=None,
+	ssl=None, ssl_files=None,
+	debug=False, block=False):
 	"""Start serving on the given host and port."""
 	if block:
 		raise NotImplementedError
-	asyncio.run(_run(host, port, tick_seconds), debug=debug)
+	asyncio.run(_run(host, port, tick_seconds, ssl, ssl_files), debug=debug)
 
 
 ### CLIENT API ###

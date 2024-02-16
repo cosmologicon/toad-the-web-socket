@@ -1,3 +1,15 @@
+"""
+To deploy:
+
+scp server.py toad.py game.py night@night.xen.prgmr.com:/var/ws/lights-out/
+scp client.html night@night.xen.prgmr.com:/var/www/unifac/lights-out/index.html
+
+
+/var/ws/lights-out$ nohup sudo python3 server.py &
+get its pid with: ps aux | grep python
+"""
+
+
 import json
 import toad, game
 
@@ -6,7 +18,11 @@ GRIDSIZE = 3, 3
 state = game.Gamestate.randomstate(*GRIDSIZE)
 
 def send_debug():
-	toad.send_all_json(["debug", dict(num_clients = len(toad.open_clients()))])
+	obj = dict(
+		num_clients = len(toad.open_clients()),
+		client_pings = [(client.id, client.last_ping_ms()) for client in toad.open_clients()],
+	)
+	toad.send_all_json(["debug", obj])
 
 @toad.onopen
 def onopen(client):
@@ -56,10 +72,10 @@ def ontick():
 	pingtimer += 0.5
 	if pingtimer > 5:
 		for client in toad.open_clients():
-			ping = client.last_ping()
-			print(f"PING CLIENT#{client.id}: {ping if ping is None else round(1000 * ping, 1)}ms")
 			client.ping()
 		pingtimer = 0
+		send_debug()
 
-toad.start_server("", 1234, tick_seconds=0.5)
+ssl_files = "/etc/letsencrypt/live/universefactory.net/cert.pem", "/etc/letsencrypt/live/universefactory.net/privkey.pem"
+toad.start_server("", 1701, tick_seconds=0.5, ssl_files=ssl_files)
 

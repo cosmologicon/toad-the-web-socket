@@ -1,5 +1,5 @@
 import random
-from functools import cache
+from functools import lru_cache
 from itertools import count
 
 def adjs0(w, h, x0, y0):
@@ -7,9 +7,9 @@ def adjs0(w, h, x0, y0):
 		x, y = x0 + dx, y0 + dy
 		if 0 <= x < w and 0 <= y < h:
 			yield x + w * y
-@cache
+@lru_cache(None)
 def adjs(w, h, x0, y0):
-	return list(adjs0(w, h, x0, y0))	
+	return list(adjs0(w, h, x0, y0))
 
 _id_generator = count()
 
